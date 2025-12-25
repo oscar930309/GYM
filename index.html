@@ -7,10 +7,10 @@
     <!-- 載入 Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- 載入 Babel (這是修正的關鍵，用於在瀏覽器解析 JSX) -->
+    <!-- 載入 Babel -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    <!-- 設定 Import Map 以便使用 ES Modules -->
+    <!-- 設定 Import Map -->
     <script type="importmap">
     {
         "imports": {
@@ -21,56 +21,70 @@
     }
     </script>
     <style>
-        /* 防止行動裝置雙擊縮放 */
         button { touch-action: manipulation; }
+        /* 增加一個閃爍動畫給倒數使用 */
+        @keyframes countdown-pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.2); opacity: 0.8; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .animate-countdown {
+            animation: countdown-pulse 0.8s infinite;
+        }
     </style>
 </head>
 <body class="bg-neutral-900 text-white">
     <div id="root"></div>
 
-    <!-- 應用程式邏輯 -->
-    <!-- 注意：這裡已改為 type="text/babel" 並加上 data-type="module" -->
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect, useRef } from 'react';
         import { createRoot } from 'react-dom/client';
-        import { Play, Pause, RotateCcw, Settings, Plus, Minus, Dumbbell, CheckCircle2, X, SkipForward, RefreshCw, Undo2, TimerReset } from 'lucide-react';
+        import { Play, Pause, RotateCcw, Settings, Plus, Minus, Dumbbell, CheckCircle2, X, SkipForward, RefreshCw, Undo2, TimerReset, Siren } from 'lucide-react';
 
         const App = () => {
             // --- 常數定義 ---
             const PHASE = {
-                IDLE: 'idle',     // 準備開始
-                WORK: 'work',     // 訓練中
-                REST: 'rest',     // 休息中
+                IDLE: 'idle',      // 準備開始
+                PREPARE: 'prepare', // 3秒倒數
+                WORK: 'work',      // 訓練中
+                REST: 'rest',      // 休息中
                 FINISHED: 'finished' // 全部完成
             };
 
             // --- 狀態管理 ---
             const [config, setConfig] = useState({
                 totalSets: 4,
-                workTime: 60, // 訓練時間 (秒)
-                restTime: 90, // 休息時間 (秒)
+                workTime: 60,
+                restTime: 90,
             });
 
             const [currentSet, setCurrentSet] = useState(1);
             const [phase, setPhase] = useState(PHASE.IDLE);
+            
+            // 顯示用的剩餘時間
             const [timeLeft, setTimeLeft] = useState(config.workTime);
+            
             const [isActive, setIsActive] = useState(false);
             const [showSettings, setShowSettings] = useState(false);
             const [showResetMenu, setShowResetMenu] = useState(false);
             const [tempConfig, setTempConfig] = useState({...config});
 
+            // 關鍵：用來儲存目標結束時間的時間戳記
+            const targetTimeRef = useRef(null);
             const timerRef = useRef(null);
             const audioContextRef = useRef(null);
+            // 用來記錄上次播放音效的秒數，避免重複播放
+            const lastBeepTimeRef = useRef(null);
 
             // --- 音效處理 ---
             const playBeep = (type = 'short') => {
                 if (!audioContextRef.current) {
-                audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+                    audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
                 }
                 const ctx = audioContextRef.current;
                 
                 if (ctx.state === 'suspended') {
-                ctx.resume();
+                    ctx.resume();
                 }
 
                 const oscillator = ctx.createOscillator();
@@ -82,105 +96,190 @@
                 const now = ctx.currentTime;
 
                 if (type === 'finished') {
-                oscillator.type = 'triangle';
-                oscillator.frequency.setValueAtTime(600, now);
-                oscillator.frequency.linearRampToValueAtTime(1000, now + 0.1);
-                gainNode.gain.setValueAtTime(0.5, now);
-                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.8);
-                oscillator.start(now);
-                oscillator.stop(now + 0.8);
+                    // 階段完成 (長嗶聲)
+                    oscillator.type = 'triangle';
+                    oscillator.frequency.setValueAtTime(600, now);
+                    oscillator.frequency.linearRampToValueAtTime(1000, now + 0.1);
+                    gainNode.gain.setValueAtTime(0.5, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.8);
+                    oscillator.start(now);
+                    oscillator.stop(now + 0.8);
                 } else if (type === 'countdown') {
-                oscillator.type = 'sine';
-                oscillator.frequency.setValueAtTime(800, now);
-                gainNode.gain.setValueAtTime(0.3, now);
-                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
-                oscillator.start(now);
-                oscillator.stop(now + 0.15);
+                    // 倒數 5 秒 (短促)
+                    oscillator.type = 'sine';
+                    oscillator.frequency.setValueAtTime(800, now);
+                    gainNode.gain.setValueAtTime(0.3, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+                    oscillator.start(now);
+                    oscillator.stop(now + 0.15);
+                } else if (type === 'prepare') {
+                    // 3-2-1 準備倒數 (低沉一點)
+                    oscillator.type = 'square';
+                    oscillator.frequency.setValueAtTime(440, now); // A4
+                    gainNode.gain.setValueAtTime(0.2, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+                    oscillator.start(now);
+                    oscillator.stop(now + 0.3);
+                } else if (type === 'go') {
+                    // GO! (高音)
+                    oscillator.type = 'sawtooth';
+                    oscillator.frequency.setValueAtTime(880, now); // A5
+                    gainNode.gain.setValueAtTime(0.3, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+                    oscillator.start(now);
+                    oscillator.stop(now + 0.5);
                 } else {
-                oscillator.type = 'sine';
-                oscillator.frequency.setValueAtTime(440, now);
-                gainNode.gain.setValueAtTime(0.1, now);
-                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
-                oscillator.start(now);
-                oscillator.stop(now + 0.1);
+                    // 普通按鍵
+                    oscillator.type = 'sine';
+                    oscillator.frequency.setValueAtTime(440, now);
+                    gainNode.gain.setValueAtTime(0.1, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+                    oscillator.start(now);
+                    oscillator.stop(now + 0.1);
                 }
             };
 
-            // --- 倒數計時提示音監聽 ---
+            // --- 核心計時邏輯 (背景執行優化版) ---
             useEffect(() => {
-                if (isActive && timeLeft > 0 && timeLeft <= 5) {
-                playBeep('countdown');
-                }
-            }, [timeLeft, isActive]);
+                if (isActive && targetTimeRef.current) {
+                    // 使用 setInterval 頻繁檢查，但時間計算依賴 Date.now()
+                    timerRef.current = setInterval(() => {
+                        const now = Date.now();
+                        const remaining = Math.ceil((targetTimeRef.current - now) / 1000);
+                        const displayTime = Math.max(0, remaining);
+                        
+                        setTimeLeft(displayTime);
 
-            // --- 計時器核心邏輯 ---
-            useEffect(() => {
-                if (isActive && timeLeft > 0) {
-                timerRef.current = setInterval(() => {
-                    setTimeLeft((prev) => prev - 1);
-                }, 1000);
-                } else if (timeLeft === 0 && isActive) {
-                clearInterval(timerRef.current);
-                handlePhaseComplete();
+                        // 音效檢查 (確保同一秒只叫一次)
+                        if (displayTime !== lastBeepTimeRef.current) {
+                            lastBeepTimeRef.current = displayTime;
+                            
+                            // 3秒啟動倒數邏輯
+                            if (phase === PHASE.PREPARE) {
+                                if (displayTime > 0) playBeep('prepare'); // 3, 2, 1
+                            } 
+                            // 正常倒數邏輯 (最後5秒)
+                            else if (displayTime <= 5 && displayTime > 0) {
+                                playBeep('countdown');
+                            }
+                        }
+
+                        if (remaining <= 0) {
+                            clearInterval(timerRef.current);
+                            handlePhaseComplete();
+                        }
+                    }, 100); // 這裡設為 100ms 檢查一次，確保介面更新順暢，且回來時能馬上校正
+                } else {
+                    clearInterval(timerRef.current);
                 }
 
                 return () => clearInterval(timerRef.current);
-            }, [isActive, timeLeft]);
+            }, [isActive, phase]); // 相依性加入 phase 以便切換音效邏輯
 
+            // --- 階段切換處理 ---
             const handlePhaseComplete = () => {
-                playBeep('finished');
-                
-                if (phase === PHASE.WORK) {
-                setPhase(PHASE.REST);
-                setTimeLeft(config.restTime);
-                } else if (phase === PHASE.REST) {
-                if (currentSet < config.totalSets) {
-                    setCurrentSet((prev) => prev + 1);
+                if (phase === PHASE.PREPARE) {
+                    playBeep('go');
                     setPhase(PHASE.WORK);
-                    setTimeLeft(config.workTime);
-                } else {
-                    setIsActive(false);
-                    setPhase(PHASE.FINISHED);
+                    startTimerWithDuration(config.workTime); // 正式開始 WORK
+                } else if (phase === PHASE.WORK) {
+                    playBeep('finished');
+                    setPhase(PHASE.REST);
+                    startTimerWithDuration(config.restTime);
+                } else if (phase === PHASE.REST) {
+                    playBeep('finished');
+                    if (currentSet < config.totalSets) {
+                        setCurrentSet((prev) => prev + 1);
+                        // 下一組開始前，是否要再次 3 秒倒數？
+                        // 為了流暢性，通常組間休息結束直接進 WORK。
+                        // 如果您希望每組都倒數，這裡改為 setPhase(PHASE.PREPARE) 即可。
+                        // 這裡設定直接進入 WORK
+                        setPhase(PHASE.WORK);
+                        startTimerWithDuration(config.workTime);
+                    } else {
+                        setIsActive(false);
+                        setPhase(PHASE.FINISHED);
+                        targetTimeRef.current = null;
+                    }
                 }
-                }
+            };
+
+            // --- 啟動計時器 (設定 Timestamp) ---
+            const startTimerWithDuration = (durationSeconds) => {
+                const now = Date.now();
+                targetTimeRef.current = now + (durationSeconds * 1000);
+                setTimeLeft(durationSeconds);
+                setIsActive(true);
+                lastBeepTimeRef.current = null; // 重置音效鎖
             };
 
             // --- 操作功能 ---
             const startWorkout = () => {
-                if (phase === PHASE.IDLE) {
-                setPhase(PHASE.WORK);
-                setTimeLeft(config.workTime);
-                }
-                setIsActive(true);
                 if (!audioContextRef.current) {
                     audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                
+                // 從 IDLE 開始，先進入 3 秒準備期
+                if (phase === PHASE.IDLE) {
+                    setPhase(PHASE.PREPARE);
+                    startTimerWithDuration(3);
+                } else {
+                    // 如果是暫停後恢復，重新計算目標時間
+                    const now = Date.now();
+                    targetTimeRef.current = now + (timeLeft * 1000);
+                    setIsActive(true);
                 }
             };
 
             const toggleTimer = () => {
-                setIsActive(!isActive);
+                if (isActive) {
+                    // 暫停：清除目標時間，保留當前 timeLeft
+                    setIsActive(false);
+                    targetTimeRef.current = null;
+                } else {
+                    // 恢復：用當前 timeLeft 重新設定目標時間
+                    startWorkout();
+                }
             };
 
             const skipPhase = () => {
                 setIsActive(false);
-                handlePhaseComplete();
-                setIsActive(true);
+                handlePhaseComplete(); // 這會觸發下一個階段
+                // handlePhaseComplete 會自動設定狀態，但我們需要手動觸發下一階段的計時
+                // 因為 handlePhaseComplete 裡的邏輯是設計給自動播放的，
+                // 在手動跳過時，我們需要確保 React 狀態更新後才開始計時，
+                // 為了簡單，這裡我們讓使用者點擊播放，或者用 setTimeout 延遲啟動
+                // 但更好的方式是直接在 handlePhaseComplete 判斷 isActive 狀態? 
+                // 這裡簡化處理：跳過後保持暫停，讓使用者準備好再按開始，或者直接開始。
+                // 根據使用者習慣，跳過休息通常是想直接練，所以我們讓它自動開始。
+                // (上面的 handlePhaseComplete 已經包含了 startTimerWithDuration，所以只要 isActive 為 true 應該會繼續跑，但因為 setIsActive(false) 了...)
+                // 修正：手動跳過時，強制設為 active
+                setTimeout(() => setIsActive(true), 0);
             };
 
             const handleResetButtonClick = () => {
                 setIsActive(false);
+                targetTimeRef.current = null;
                 setShowResetMenu(true);
             };
 
             const resetCurrentTime = () => {
-                setTimeLeft(phase === PHASE.WORK ? config.workTime : config.restTime);
+                let duration = 0;
+                if (phase === PHASE.WORK) duration = config.workTime;
+                else if (phase === PHASE.REST) duration = config.restTime;
+                else if (phase === PHASE.PREPARE) duration = 3;
+                
+                setTimeLeft(duration);
                 setShowResetMenu(false);
             };
 
             const restartCurrentSet = () => {
-                setPhase(PHASE.WORK);
-                setTimeLeft(config.workTime);
-                setIsActive(false);
+                // 重啟本組：回到 PREPARE 還是 WORK？
+                // 通常重做一組會希望有準備時間，所以回到 PREPARE
+                setPhase(PHASE.PREPARE);
+                setTimeLeft(3);
+                setIsActive(false); // 重置後暫停
+                targetTimeRef.current = null;
                 setShowResetMenu(false);
             };
 
@@ -188,23 +287,32 @@
                 setIsActive(false);
                 setPhase(PHASE.IDLE);
                 setCurrentSet(1);
-                setTimeLeft(config.workTime);
+                setTimeLeft(config.workTime); // 顯示第一組時間
+                targetTimeRef.current = null;
                 setShowResetMenu(false);
             };
 
             const adjustTime = (seconds) => {
-                setTimeLeft((prev) => Math.max(0, prev + seconds));
+                const newTime = Math.max(0, timeLeft + seconds);
+                setTimeLeft(newTime);
+                if (isActive) {
+                    // 如果正在跑，要同步更新目標時間戳記
+                    const now = Date.now();
+                    targetTimeRef.current = now + (newTime * 1000);
+                }
             };
 
             const saveSettings = () => {
                 setConfig(tempConfig);
-                if (!isActive && phase !== PHASE.FINISHED) {
-                if (phase === PHASE.WORK || phase === PHASE.IDLE) setTimeLeft(tempConfig.workTime);
-                if (phase === PHASE.REST) setTimeLeft(tempConfig.restTime);
+                // 更新當前顯示時間 (若未開始)
+                if (!isActive && phase !== PHASE.FINISHED && phase !== PHASE.PREPARE) {
+                    if (phase === PHASE.WORK || phase === PHASE.IDLE) setTimeLeft(tempConfig.workTime);
+                    if (phase === PHASE.REST) setTimeLeft(tempConfig.restTime);
                 }
                 setShowSettings(false);
             };
 
+            // --- 輔助函式 ---
             const formatTime = (seconds) => {
                 const m = Math.floor(seconds / 60);
                 const s = seconds % 60;
@@ -213,13 +321,19 @@
 
             const calculateProgress = () => {
                 if (phase === PHASE.IDLE || phase === PHASE.FINISHED) return 0;
-                const total = phase === PHASE.WORK ? config.workTime : config.restTime;
+                
+                let total = 0;
+                if (phase === PHASE.PREPARE) total = 3;
+                else if (phase === PHASE.WORK) total = config.workTime;
+                else if (phase === PHASE.REST) total = config.restTime;
+                
                 if (total === 0) return 100;
                 const percentage = ((total - timeLeft) / total) * 100;
-                return percentage;
+                return Math.max(0, Math.min(100, percentage));
             };
 
             const getThemeColor = () => {
+                if (phase === PHASE.PREPARE) return 'text-purple-500';
                 if (phase === PHASE.WORK) return 'text-amber-500';
                 if (phase === PHASE.REST) return 'text-emerald-500';
                 return 'text-emerald-500';
@@ -229,7 +343,11 @@
                 <div className="min-h-screen bg-neutral-900 text-white font-sans flex flex-col relative overflow-hidden selection:bg-emerald-500 selection:text-white">
                 
                 <div className="absolute top-0 left-0 w-full h-full overflow-hidden z-0 pointer-events-none opacity-20">
-                    <div className={`absolute top-[-10%] left-[-10%] w-96 h-96 rounded-full blur-[100px] transition-colors duration-1000 ${phase === PHASE.WORK ? 'bg-amber-600' : 'bg-emerald-600'}`}></div>
+                    <div className={`absolute top-[-10%] left-[-10%] w-96 h-96 rounded-full blur-[100px] transition-colors duration-1000 
+                        ${phase === PHASE.WORK ? 'bg-amber-600' : 
+                          phase === PHASE.REST ? 'bg-emerald-600' : 
+                          phase === PHASE.PREPARE ? 'bg-purple-600' : 'bg-emerald-600'}`}>
+                    </div>
                     <div className="absolute bottom-[-10%] right-[-10%] w-96 h-96 bg-blue-600 rounded-full blur-[100px]"></div>
                 </div>
 
@@ -315,13 +433,26 @@
                             ) : (
                             <>
                                 <span className={`text-xl font-bold tracking-widest uppercase mb-2 ${getThemeColor()} animate-in slide-in-from-bottom-2`}>
-                                {phase === PHASE.WORK ? 'WORK' : 'REST'}
+                                {phase === PHASE.WORK ? 'WORK' : 
+                                 phase === PHASE.REST ? 'REST' :
+                                 phase === PHASE.PREPARE ? 'READY?' : ''}
                                 </span>
-                                <span className={`text-7xl font-bold font-mono tracking-tighter ${timeLeft <= 5 ? 'text-red-500 animate-pulse' : 'text-white'}`}>
-                                {formatTime(timeLeft)}
-                                </span>
+                                
+                                {phase === PHASE.PREPARE ? (
+                                    <span className="text-8xl font-black text-white animate-countdown font-mono">
+                                        {timeLeft}
+                                    </span>
+                                ) : (
+                                    <span className={`text-7xl font-bold font-mono tracking-tighter ${timeLeft <= 5 ? 'text-red-500 animate-pulse' : 'text-white'}`}>
+                                        {formatTime(timeLeft)}
+                                    </span>
+                                )}
+
                                 <span className="text-gray-500 font-medium mt-2 text-sm">
-                                {isActive ? (phase === PHASE.WORK ? '訓練中...' : '休息中...') : '已暫停'}
+                                {isActive ? (
+                                    phase === PHASE.PREPARE ? '倒數開始...' :
+                                    phase === PHASE.WORK ? '訓練中...' : '休息中...'
+                                ) : '已暫停'}
                                 </span>
                             </>
                             )}
@@ -354,20 +485,23 @@
                             </button>
                             </div>
 
+                            {/* 在 PREPARE 階段不顯示時間調整，避免混亂 */}
+                            {phase !== PHASE.PREPARE && (
                             <div className="flex justify-center gap-4">
-                            <button 
-                                onClick={() => adjustTime(-10)}
-                                className="px-4 py-2 bg-neutral-800/50 hover:bg-neutral-800 rounded-lg text-sm text-gray-400 font-medium border border-neutral-700 transition-colors"
-                            >
-                                -10 秒
-                            </button>
-                            <button 
-                                onClick={() => adjustTime(10)}
-                                className="px-4 py-2 bg-neutral-800/50 hover:bg-neutral-800 rounded-lg text-sm text-gray-400 font-medium border border-neutral-700 transition-colors"
-                            >
-                                +10 秒
-                            </button>
+                                <button 
+                                    onClick={() => adjustTime(-10)}
+                                    className="px-4 py-2 bg-neutral-800/50 hover:bg-neutral-800 rounded-lg text-sm text-gray-400 font-medium border border-neutral-700 transition-colors"
+                                >
+                                    -10 秒
+                                </button>
+                                <button 
+                                    onClick={() => adjustTime(10)}
+                                    className="px-4 py-2 bg-neutral-800/50 hover:bg-neutral-800 rounded-lg text-sm text-gray-400 font-medium border border-neutral-700 transition-colors"
+                                >
+                                    +10 秒
+                                </button>
                             </div>
+                            )}
                         </div>
                         )}
                     </div>
@@ -396,12 +530,12 @@
                             onClick={restartCurrentSet}
                             className="w-full p-4 bg-neutral-800 hover:bg-neutral-700 rounded-xl flex items-center gap-3 transition-colors"
                         >
-                            <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center">
-                            <Undo2 className="w-5 h-5 text-amber-500" />
+                            <div className="w-10 h-10 rounded-full bg-purple-500/20 flex items-center justify-center">
+                            <Undo2 className="w-5 h-5 text-purple-500" />
                             </div>
                             <div className="text-left">
                             <div className="font-bold text-white">重啟本組</div>
-                            <div className="text-xs text-gray-400">回到第 {currentSet} 組開始</div>
+                            <div className="text-xs text-gray-400">回到準備倒數</div>
                             </div>
                         </button>
 
