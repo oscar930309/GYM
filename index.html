@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>重訓組間休息計時器</title>
+    <!-- 載入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 載入 Babel (這是修正的關鍵，用於在瀏覽器解析 JSX) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- 設定 Import Map 以便使用 ES Modules -->
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.2.0",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+            "lucide-react": "https://esm.sh/lucide-react@0.292.0?external=react"
+        }
+    }
+    </script>
+    <style>
+        /* 防止行動裝置雙擊縮放 */
+        button { touch-action: manipulation; }
+    </style>
+</head>
+<body class="bg-neutral-900 text-white">
+    <div id="root"></div>
+
+    <!-- 應用程式邏輯 -->
+    <!-- 注意：這裡已改為 type="text/babel" 並加上 data-type="module" -->
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect, useRef } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { Play, Pause, RotateCcw, Settings, Plus, Minus, Dumbbell, CheckCircle2, X, SkipForward, RefreshCw, Undo2, TimerReset } from 'lucide-react';
+
+        const App = () => {
+            // --- 常數定義 ---
+            const PHASE = {
+                IDLE: 'idle',     // 準備開始
+                WORK: 'work',     // 訓練中
+                REST: 'rest',     // 休息中
+                FINISHED: 'finished' // 全部完成
+            };
+
+            // --- 狀態管理 ---
+            const [config, setConfig] = useState({
+                totalSets: 4,
+                workTime: 60, // 訓練時間 (秒)
+                restTime: 90, // 休息時間 (秒)
+            });
+
+            const [currentSet, setCurrentSet] = useState(1);
+            const [phase, setPhase] = useState(PHASE.IDLE);
+            const [timeLeft, setTimeLeft] = useState(config.workTime);
+            const [isActive, setIsActive] = useState(false);
+            const [showSettings, setShowSettings] = useState(false);
+            const [showResetMenu, setShowResetMenu] = useState(false);
+            const [tempConfig, setTempConfig] = useState({...config});
+
+            const timerRef = useRef(null);
+            const audioContextRef = useRef(null);
+
+            // --- 音效處理 ---
+            const playBeep = (type = 'short') => {
+                if (!audioContextRef.current) {
+                audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                const ctx = audioContextRef.current;
+                
+                if (ctx.state === 'suspended') {
+                ctx.resume();
+                }
+
+                const oscillator = ctx.createOscillator();
+                const gainNode = ctx.createGain();
+
+                oscillator.connect(gainNode);
+                gainNode.connect(ctx.destination);
+
+                const now = ctx.currentTime;
+
+                if (type === 'finished') {
+                oscillator.type = 'triangle';
+                oscillator.frequency.setValueAtTime(600, now);
+                oscillator.frequency.linearRampToValueAtTime(1000, now + 0.1);
+                gainNode.gain.setValueAtTime(0.5, now);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.8);
+                oscillator.start(now);
+                oscillator.stop(now + 0.8);
+                } else if (type === 'countdown') {
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(800, now);
+                gainNode.gain.setValueAtTime(0.3, now);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+                oscillator.start(now);
+                oscillator.stop(now + 0.15);
+                } else {
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(440, now);
+                gainNode.gain.setValueAtTime(0.1, now);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+                oscillator.start(now);
+                oscillator.stop(now + 0.1);
+                }
+            };
+
+            // --- 倒數計時提示音監聽 ---
+            useEffect(() => {
+                if (isActive && timeLeft > 0 && timeLeft <= 5) {
+                playBeep('countdown');
+                }
+            }, [timeLeft, isActive]);
+
+            // --- 計時器核心邏輯 ---
+            useEffect(() => {
+                if (isActive && timeLeft > 0) {
+                timerRef.current = setInterval(() => {
+                    setTimeLeft((prev) => prev - 1);
+                }, 1000);
+                } else if (timeLeft === 0 && isActive) {
+                clearInterval(timerRef.current);
+                handlePhaseComplete();
+                }
+
+                return () => clearInterval(timerRef.current);
+            }, [isActive, timeLeft]);
+
+            const handlePhaseComplete = () => {
+                playBeep('finished');
+                
+                if (phase === PHASE.WORK) {
+                setPhase(PHASE.REST);
+                setTimeLeft(config.restTime);
+                } else if (phase === PHASE.REST) {
+                if (currentSet < config.totalSets) {
+                    setCurrentSet((prev) => prev + 1);
+                    setPhase(PHASE.WORK);
+                    setTimeLeft(config.workTime);
+                } else {
+                    setIsActive(false);
+                    setPhase(PHASE.FINISHED);
+                }
+                }
+            };
+
+            // --- 操作功能 ---
+            const startWorkout = () => {
+                if (phase === PHASE.IDLE) {
+                setPhase(PHASE.WORK);
+                setTimeLeft(config.workTime);
+                }
+                setIsActive(true);
+                if (!audioContextRef.current) {
+                    audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+                }
+            };
+
+            const toggleTimer = () => {
+                setIsActive(!isActive);
+            };
+
+            const skipPhase = () => {
+                setIsActive(false);
+                handlePhaseComplete();
+                setIsActive(true);
+            };
+
+            const handleResetButtonClick = () => {
+                setIsActive(false);
+                setShowResetMenu(true);
+            };
+
+            const resetCurrentTime = () => {
+                setTimeLeft(phase === PHASE.WORK ? config.workTime : config.restTime);
+                setShowResetMenu(false);
+            };
+
+            const restartCurrentSet = () => {
+                setPhase(PHASE.WORK);
+                setTimeLeft(config.workTime);
+                setIsActive(false);
+                setShowResetMenu(false);
+            };
+
+            const restartWorkout = () => {
+                setIsActive(false);
+                setPhase(PHASE.IDLE);
+                setCurrentSet(1);
+                setTimeLeft(config.workTime);
+                setShowResetMenu(false);
+            };
+
+            const adjustTime = (seconds) => {
+                setTimeLeft((prev) => Math.max(0, prev + seconds));
+            };
+
+            const saveSettings = () => {
+                setConfig(tempConfig);
+                if (!isActive && phase !== PHASE.FINISHED) {
+                if (phase === PHASE.WORK || phase === PHASE.IDLE) setTimeLeft(tempConfig.workTime);
+                if (phase === PHASE.REST) setTimeLeft(tempConfig.restTime);
+                }
+                setShowSettings(false);
+            };
+
+            const formatTime = (seconds) => {
+                const m = Math.floor(seconds / 60);
+                const s = seconds % 60;
+                return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+            };
+
+            const calculateProgress = () => {
+                if (phase === PHASE.IDLE || phase === PHASE.FINISHED) return 0;
+                const total = phase === PHASE.WORK ? config.workTime : config.restTime;
+                if (total === 0) return 100;
+                const percentage = ((total - timeLeft) / total) * 100;
+                return percentage;
+            };
+
+            const getThemeColor = () => {
+                if (phase === PHASE.WORK) return 'text-amber-500';
+                if (phase === PHASE.REST) return 'text-emerald-500';
+                return 'text-emerald-500';
+            };
+
+            return (
+                <div className="min-h-screen bg-neutral-900 text-white font-sans flex flex-col relative overflow-hidden selection:bg-emerald-500 selection:text-white">
+                
+                <div className="absolute top-0 left-0 w-full h-full overflow-hidden z-0 pointer-events-none opacity-20">
+                    <div className={`absolute top-[-10%] left-[-10%] w-96 h-96 rounded-full blur-[100px] transition-colors duration-1000 ${phase === PHASE.WORK ? 'bg-amber-600' : 'bg-emerald-600'}`}></div>
+                    <div className="absolute bottom-[-10%] right-[-10%] w-96 h-96 bg-blue-600 rounded-full blur-[100px]"></div>
+                </div>
+
+                <nav className="relative z-10 flex justify-between items-center p-6">
+                    <div className={`flex items-center gap-2 transition-colors duration-500 ${getThemeColor()}`}>
+                    <Dumbbell className="w-6 h-6" />
+                    <span className="font-bold text-lg tracking-wider">GYM TIMER</span>
+                    </div>
+                    <button 
+                    onClick={() => {
+                        setTempConfig(config);
+                        setShowSettings(true);
+                    }}
+                    className="p-2 bg-neutral-800 hover:bg-neutral-700 rounded-full transition-colors"
+                    >
+                    <Settings className="w-6 h-6 text-gray-300" />
+                    </button>
+                </nav>
+
+                <main className="relative z-10 flex-1 flex flex-col items-center justify-center p-4">
+                    {phase === PHASE.FINISHED ? (
+                    <div className="text-center animate-in fade-in zoom-in duration-300">
+                        <CheckCircle2 className="w-32 h-32 text-emerald-500 mx-auto mb-6" />
+                        <h2 className="text-4xl font-bold mb-4">訓練完成！</h2>
+                        <p className="text-gray-400 mb-8 text-xl">今日目標 {config.totalSets} 組已達成</p>
+                        <button 
+                        onClick={restartWorkout}
+                        className="px-8 py-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold text-xl flex items-center gap-2 mx-auto transition-transform active:scale-95"
+                        >
+                        <RefreshCw className="w-5 h-5" />
+                        重新開始
+                        </button>
+                    </div>
+                    ) : (
+                    <div className="w-full max-w-md flex flex-col items-center">
+                        <div className="flex gap-4 mb-8">
+                        <div className="flex items-center gap-3 bg-neutral-800/50 px-6 py-2 rounded-full border border-neutral-700">
+                            <span className="text-gray-400 text-xs font-medium uppercase tracking-widest">Set</span>
+                            <span className="text-2xl font-bold text-white">
+                            <span className={getThemeColor()}>{currentSet}</span> 
+                            <span className="text-gray-600 mx-1">/</span> 
+                            {config.totalSets}
+                            </span>
+                        </div>
+                        </div>
+
+                        <div className="relative w-72 h-72 mb-10 flex items-center justify-center">
+                        <svg className="absolute w-full h-full transform -rotate-90">
+                            <circle
+                            cx="144"
+                            cy="144"
+                            r="136"
+                            stroke="currentColor"
+                            strokeWidth="12"
+                            fill="transparent"
+                            className="text-neutral-800"
+                            />
+                            <circle
+                            cx="144"
+                            cy="144"
+                            r="136"
+                            stroke="currentColor"
+                            strokeWidth="12"
+                            fill="transparent"
+                            strokeDasharray={2 * Math.PI * 136}
+                            strokeDashoffset={2 * Math.PI * 136 * (1 - calculateProgress() / 100)}
+                            className={`${getThemeColor()} transition-all duration-1000 ease-linear ${phase === PHASE.IDLE ? 'opacity-0' : 'opacity-100'}`}
+                            strokeLinecap="round"
+                            />
+                        </svg>
+
+                        <div className="flex flex-col items-center z-10">
+                            {phase === PHASE.IDLE ? (
+                            <button 
+                                onClick={startWorkout}
+                                className="group relative flex flex-col items-center"
+                            >
+                                <div className="w-24 h-24 bg-emerald-600 rounded-full flex items-center justify-center shadow-[0_0_30px_rgba(5,150,105,0.4)] group-hover:scale-110 group-hover:bg-emerald-500 transition-all duration-300">
+                                <Play className="w-10 h-10 fill-white ml-1" />
+                                </div>
+                                <span className="mt-4 text-xl font-bold text-emerald-400 animate-pulse">開始訓練</span>
+                            </button>
+                            ) : (
+                            <>
+                                <span className={`text-xl font-bold tracking-widest uppercase mb-2 ${getThemeColor()} animate-in slide-in-from-bottom-2`}>
+                                {phase === PHASE.WORK ? 'WORK' : 'REST'}
+                                </span>
+                                <span className={`text-7xl font-bold font-mono tracking-tighter ${timeLeft <= 5 ? 'text-red-500 animate-pulse' : 'text-white'}`}>
+                                {formatTime(timeLeft)}
+                                </span>
+                                <span className="text-gray-500 font-medium mt-2 text-sm">
+                                {isActive ? (phase === PHASE.WORK ? '訓練中...' : '休息中...') : '已暫停'}
+                                </span>
+                            </>
+                            )}
+                        </div>
+                        </div>
+
+                        {phase !== PHASE.IDLE && (
+                        <div className="flex flex-col gap-6 w-full px-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                            <div className="flex justify-center gap-6">
+                            <button 
+                                onClick={toggleTimer}
+                                className="w-16 h-16 rounded-full bg-neutral-800 hover:bg-neutral-700 flex items-center justify-center border border-neutral-700 transition-colors"
+                            >
+                                {isActive ? <Pause className="w-6 h-6 text-yellow-400 fill-yellow-400" /> : <Play className={`w-6 h-6 ml-1 ${getThemeColor()} fill-current`} />}
+                            </button>
+                            
+                            <button 
+                                onClick={handleResetButtonClick}
+                                className="w-16 h-16 rounded-full bg-neutral-800 hover:bg-neutral-700 flex items-center justify-center border border-neutral-700 transition-colors relative"
+                            >
+                                <RotateCcw className="w-6 h-6 text-gray-300" />
+                            </button>
+
+                            <button 
+                                onClick={skipPhase}
+                                className="w-16 h-16 rounded-full bg-neutral-800 hover:bg-neutral-700 flex items-center justify-center border border-neutral-700 transition-colors"
+                                title="跳過當前階段"
+                            >
+                                <SkipForward className="w-6 h-6 text-blue-400 fill-blue-400/20" />
+                            </button>
+                            </div>
+
+                            <div className="flex justify-center gap-4">
+                            <button 
+                                onClick={() => adjustTime(-10)}
+                                className="px-4 py-2 bg-neutral-800/50 hover:bg-neutral-800 rounded-lg text-sm text-gray-400 font-medium border border-neutral-700 transition-colors"
+                            >
+                                -10 秒
+                            </button>
+                            <button 
+                                onClick={() => adjustTime(10)}
+                                className="px-4 py-2 bg-neutral-800/50 hover:bg-neutral-800 rounded-lg text-sm text-gray-400 font-medium border border-neutral-700 transition-colors"
+                            >
+                                +10 秒
+                            </button>
+                            </div>
+                        </div>
+                        )}
+                    </div>
+                    )}
+                </main>
+
+                {showResetMenu && (
+                    <div className="absolute inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="bg-neutral-900 w-full sm:w-[320px] p-6 rounded-t-3xl sm:rounded-2xl border border-neutral-800 shadow-2xl">
+                        <h3 className="text-xl font-bold mb-6 text-center text-white">重置選項</h3>
+                        <div className="space-y-3">
+                        <button 
+                            onClick={resetCurrentTime}
+                            className="w-full p-4 bg-neutral-800 hover:bg-neutral-700 rounded-xl flex items-center gap-3 transition-colors"
+                        >
+                            <div className="w-10 h-10 rounded-full bg-blue-500/20 flex items-center justify-center">
+                            <RotateCcw className="w-5 h-5 text-blue-400" />
+                            </div>
+                            <div className="text-left">
+                            <div className="font-bold text-white">重置倒數</div>
+                            <div className="text-xs text-gray-400">僅重置目前秒數</div>
+                            </div>
+                        </button>
+
+                        <button 
+                            onClick={restartCurrentSet}
+                            className="w-full p-4 bg-neutral-800 hover:bg-neutral-700 rounded-xl flex items-center gap-3 transition-colors"
+                        >
+                            <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center">
+                            <Undo2 className="w-5 h-5 text-amber-500" />
+                            </div>
+                            <div className="text-left">
+                            <div className="font-bold text-white">重啟本組</div>
+                            <div className="text-xs text-gray-400">回到第 {currentSet} 組開始</div>
+                            </div>
+                        </button>
+
+                        <button 
+                            onClick={restartWorkout}
+                            className="w-full p-4 bg-neutral-800 hover:bg-neutral-700 rounded-xl flex items-center gap-3 transition-colors"
+                        >
+                            <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center">
+                            <RefreshCw className="w-5 h-5 text-red-500" />
+                            </div>
+                            <div className="text-left">
+                            <div className="font-bold text-white">全部重來</div>
+                            <div className="text-xs text-gray-400">回到第 1 組</div>
+                            </div>
+                        </button>
+                        </div>
+                        <button 
+                        onClick={() => setShowResetMenu(false)}
+                        className="w-full mt-6 py-3 text-gray-500 font-medium hover:text-white transition-colors"
+                        >
+                        取消
+                        </button>
+                    </div>
+                    </div>
+                )}
+
+                {showSettings && (
+                    <div className="absolute inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="bg-neutral-900 w-full sm:w-[400px] p-6 rounded-t-3xl sm:rounded-2xl border border-neutral-800 shadow-2xl h-[80vh] sm:h-auto overflow-y-auto">
+                        <div className="flex justify-between items-center mb-6">
+                        <h3 className="text-xl font-bold flex items-center gap-2">
+                            <Settings className="w-5 h-5 text-emerald-500" />
+                            訓練設定
+                        </h3>
+                        <button onClick={() => setShowSettings(false)} className="text-gray-500 hover:text-white">
+                            <X className="w-6 h-6" />
+                        </button>
+                        </div>
+
+                        <div className="space-y-6">
+                        <div>
+                            <label className="block text-amber-500 text-sm mb-3 font-bold">訓練時間 (WORK)</label>
+                            <div className="flex items-center gap-4">
+                            <button 
+                                onClick={() => setTempConfig(prev => ({...prev, workTime: Math.max(5, prev.workTime - 5)}))}
+                                className="p-3 bg-neutral-800 rounded-xl hover:bg-neutral-700"
+                            >
+                                <Minus className="w-5 h-5 text-amber-500" />
+                            </button>
+                            <div className="flex-1 text-center font-mono text-3xl font-bold">
+                                {formatTime(tempConfig.workTime)}
+                            </div>
+                            <button 
+                                onClick={() => setTempConfig(prev => ({...prev, workTime: prev.workTime + 5}))}
+                                className="p-3 bg-neutral-800 rounded-xl hover:bg-neutral-700"
+                            >
+                                <Plus className="w-5 h-5 text-amber-500" />
+                            </button>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="block text-emerald-500 text-sm mb-3 font-bold">休息時間 (REST)</label>
+                            <div className="flex items-center gap-4">
+                            <button 
+                                onClick={() => setTempConfig(prev => ({...prev, restTime: Math.max(5, prev.restTime - 5)}))}
+                                className="p-3 bg-neutral-800 rounded-xl hover:bg-neutral-700"
+                            >
+                                <Minus className="w-5 h-5 text-emerald-500" />
+                            </button>
+                            <div className="flex-1 text-center font-mono text-3xl font-bold">
+                                {formatTime(tempConfig.restTime)}
+                            </div>
+                            <button 
+                                onClick={() => setTempConfig(prev => ({...prev, restTime: prev.restTime + 5}))}
+                                className="p-3 bg-neutral-800 rounded-xl hover:bg-neutral-700"
+                            >
+                                <Plus className="w-5 h-5 text-emerald-500" />
+                            </button>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="block text-gray-400 text-sm mb-3">總組數</label>
+                            <div className="flex items-center gap-4">
+                            <button 
+                                onClick={() => setTempConfig(prev => ({...prev, totalSets: Math.max(1, prev.totalSets - 1)}))}
+                                className="p-3 bg-neutral-800 rounded-xl hover:bg-neutral-700"
+                            >
+                                <Minus className="w-5 h-5 text-blue-500" />
+                            </button>
+                            <div className="flex-1 text-center font-mono text-3xl font-bold">
+                                {tempConfig.totalSets} <span className="text-sm text-gray-500 font-sans">組</span>
+                            </div>
+                            <button 
+                                onClick={() => setTempConfig(prev => ({...prev, totalSets: prev.totalSets + 1}))}
+                                className="p-3 bg-neutral-800 rounded-xl hover:bg-neutral-700"
+                            >
+                                <Plus className="w-5 h-5 text-blue-500" />
+                            </button>
+                            </div>
+                        </div>
+                        </div>
+
+                        <div className="space-y-3 mt-8">
+                        <button 
+                            onClick={saveSettings}
+                            className="w-full bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-white font-bold py-4 rounded-xl transition-colors"
+                        >
+                            儲存並返回
+                        </button>
+                        
+                        <button 
+                            onClick={() => {
+                            restartWorkout();
+                            setShowSettings(false);
+                            }}
+                            className="w-full bg-red-900/30 hover:bg-red-900/50 text-red-400 font-bold py-3 rounded-xl transition-colors text-sm"
+                        >
+                            結束並重新開始訓練
+                        </button>
+                        </div>
+                    </div>
+                    </div>
+                )}
+                </div>
+            );
+        };
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(React.createElement(App));
+    </script>
+</body>
+</html>
